@@ -1,16 +1,16 @@
-package store
+package memorystore
 
 import (
-	"errors"
 	"strings"
 	"sync"
 	"time"
 
 	"tiny-tasks/internal/ids"
 	"tiny-tasks/internal/model"
+	"tiny-tasks/internal/task"
 )
 
-var ErrNotFound = errors.New("not found")
+var _ task.TaskRepository = (*TaskStore)(nil)
 
 type TaskStore struct {
 	mu    sync.RWMutex
@@ -21,7 +21,7 @@ func NewTaskStore() *TaskStore {
 	return &TaskStore{tasks: make(map[string]model.Task)}
 }
 
-func (s *TaskStore) Create(title string) model.Task {
+func (s *TaskStore) Create(title string) (model.Task, error) {
 	now := time.Now().UTC()
 	t := model.Task{
 		ID:          ids.NewID(),
@@ -34,10 +34,10 @@ func (s *TaskStore) Create(title string) model.Task {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tasks[t.ID] = t
-	return t
+	return t, nil
 }
 
-func (s *TaskStore) List() []model.Task {
+func (s *TaskStore) List() ([]model.Task, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -45,7 +45,7 @@ func (s *TaskStore) List() []model.Task {
 	for _, t := range s.tasks {
 		out = append(out, t)
 	}
-	return out
+	return out, nil
 }
 
 func (s *TaskStore) Get(id string) (model.Task, error) {

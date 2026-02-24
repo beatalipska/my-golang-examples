@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"tiny-tasks/internal/httpapi"
-	"tiny-tasks/internal/store"
+	"tiny-tasks/internal/store/memorystore"
+	"tiny-tasks/internal/task"
 )
 
 func main() {
-	st := store.NewTaskStore()
-	handler := httpapi.NewServer(st)
+	repo := memorystore.NewTaskStore()
+	service := task.NewService(repo)
+	handler := httpapi.NewServer(service)
 
 	httpServer := &http.Server{
 		Addr:              ":8080",

@@ -11,12 +11,14 @@ import (
 
 	"tiny-tasks/internal/httpapi"
 	"tiny-tasks/internal/model"
-	"tiny-tasks/internal/store"
+	"tiny-tasks/internal/store/memorystore"
+	"tiny-tasks/internal/task"
 )
 
 func newTestServer() *httptest.Server {
-	st := store.NewTaskStore()
-	srv := httpapi.NewServer(st)
+	repo := memorystore.NewTaskStore()
+	service := task.NewService(repo)
+	srv := httpapi.NewServer(service)
 	return httptest.NewServer(srv)
 }
 
