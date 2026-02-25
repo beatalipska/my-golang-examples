@@ -2,17 +2,16 @@ package httpapi
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"webhook-ingestion-service/internal/httpapi/webhookauth"
+	"webhook-ingestion-service/internal/model"
+	"webhook-ingestion-service/internal/task"
 )
 
-const maxBodyBytes = 1 << 20 // 1 MiB
-
-func WebhookProviderHandler(secret string, now func() time.Time) http.HandlerFunc {
+func WebhookProviderHandler(secret string, now func() time.Time, svc *task.Service) http.HandlerFunc {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
@@ -24,10 +23,6 @@ func WebhookProviderHandler(secret string, now func() time.Time) http.HandlerFun
 			return
 		}
 
-		tsHeader := r.Header.Get("X-Event-Timestamp")
-		sigHeader := r.Header.Get("X-Signature")
-
-		// Read raw body (must verify signature on raw bytes)
 		body, err := readBody(r, maxBodyBytes)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -36,8 +31,8 @@ func WebhookProviderHandler(secret string, now func() time.Time) http.HandlerFun
 
 		err = webhookauth.Verify(webhookauth.Input{
 			Secret:          secret,
-			TimestampHeader: tsHeader,
-			SignatureHeader: sigHeader,
+			TimestampHeader: r.Header.Get("X-Event-Timestamp"),
+			SignatureHeader: r.Header.Get("X-Signature"),
 			Body:            body,
 			Now:             now(),
 		})
@@ -47,27 +42,47 @@ func WebhookProviderHandler(secret string, now func() time.Time) http.HandlerFun
 				errors.Is(err, webhookauth.ErrTimestampOutsideWindow):
 				writeError(w, http.StatusBadRequest, err.Error())
 			default:
-				// invalid signature
 				writeError(w, http.StatusUnauthorized, err.Error())
 			}
 			return
 		}
 
-		// TODO (next step): decode JSON and insert into DB (dedup)
-		// For now: accept
+		created, err := svc.IngestWebhook(r.Context(), eventID, body)
+		if err != nil {
+			if errors.Is(err, task.ErrInvalidEvent) {
+				writeError(w, http.StatusBadRequest, "invalid event payload")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		// Webhook-friendly: always 202 if accepted (even if duplicate)
+		// If you prefer: if !created { return 409 }
+		_ = created
 		w.WriteHeader(http.StatusAccepted)
 	}
 }
 
-func readBody(r *http.Request, limit int64) ([]byte, error) {
-	defer r.Body.Close()
-	lr := io.LimitReader(r.Body, limit+1)
-	b, err := io.ReadAll(lr)
-	if err != nil {
-		return nil, errors.New("failed to read body")
+func GetEventHandler(svc *task.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/events/")
+		id = strings.TrimSpace(id)
+		if id == "" || strings.Contains(id, "/") {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+
+		ev, err := svc.GetEvent(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, model.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "event not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, ev)
 	}
-	if int64(len(b)) > limit {
-		return nil, errors.New("payload too large")
-	}
-	return b, nil
 }

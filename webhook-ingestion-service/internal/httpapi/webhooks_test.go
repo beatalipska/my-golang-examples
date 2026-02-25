@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -9,8 +11,29 @@ import (
 	"time"
 
 	"webhook-ingestion-service/internal/httpapi/webhookauth"
+	"webhook-ingestion-service/internal/model"
+	"webhook-ingestion-service/internal/task"
 )
 
+type fakeEventRepo struct {
+	inserted map[string]bool
+}
+
+func newFakeEventRepo() *fakeEventRepo {
+	return &fakeEventRepo{inserted: map[string]bool{}}
+}
+
+func (f *fakeEventRepo) InsertReceived(ctx context.Context, id string, eventType string, payload json.RawMessage) (bool, error) {
+	if f.inserted[id] {
+		return false, nil // duplicate
+	}
+	f.inserted[id] = true
+	return true, nil
+}
+
+func (f *fakeEventRepo) GetByID(ctx context.Context, id string) (model.Event, error) {
+	return model.Event{}, model.ErrNotFound
+}
 func TestWebhookProviderHandler_AcceptsValid(t *testing.T) {
 	secret := "dev-secret"
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
@@ -18,8 +41,10 @@ func TestWebhookProviderHandler_AcceptsValid(t *testing.T) {
 	body := `{"type":"payment_succeeded","data":{"x":1}}`
 	tsHeader := strconvI64(now.Unix())
 	sig := webhookauth.SignHex(secret, tsHeader, []byte(body))
+	repo := newFakeEventRepo()
+	svc := task.NewService(repo)
 
-	h := WebhookProviderHandler(secret, func() time.Time { return now })
+	h := WebhookProviderHandler(secret, func() time.Time { return now }, svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/provider", strings.NewReader(body))
 	req.Header.Set("X-Event-Id", "evt_123")
@@ -35,7 +60,9 @@ func TestWebhookProviderHandler_AcceptsValid(t *testing.T) {
 }
 
 func TestWebhookProviderHandler_MissingEventID(t *testing.T) {
-	h := WebhookProviderHandler("dev-secret", func() time.Time { return time.Now().UTC() })
+	repo := newFakeEventRepo()
+	svc := task.NewService(repo)
+	h := WebhookProviderHandler("dev-secret", func() time.Time { return time.Now().UTC() }, svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/provider", strings.NewReader(`{}`))
 	req.Header.Set("X-Event-Timestamp", strconvI64(time.Now().Unix()))
@@ -56,8 +83,10 @@ func TestWebhookProviderHandler_InvalidSignature(t *testing.T) {
 	body := `{"type":"payment_succeeded"}`
 	tsHeader := strconvI64(now.Unix())
 	badSig := webhookauth.SignHex("WRONG", tsHeader, []byte(body))
+	repo := newFakeEventRepo()
+	svc := task.NewService(repo)
 
-	h := WebhookProviderHandler(secret, func() time.Time { return now })
+	h := WebhookProviderHandler(secret, func() time.Time { return now }, svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/provider", strings.NewReader(body))
 	req.Header.Set("X-Event-Id", "evt_123")
@@ -80,8 +109,10 @@ func TestWebhookProviderHandler_TimestampOutsideWindow(t *testing.T) {
 	old := now.Add(-(webhookauth.Window + time.Second))
 	tsHeader := strconvI64(old.Unix())
 	sig := webhookauth.SignHex(secret, tsHeader, []byte(body))
+	repo := newFakeEventRepo()
+	svc := task.NewService(repo)
 
-	h := WebhookProviderHandler(secret, func() time.Time { return now })
+	h := WebhookProviderHandler(secret, func() time.Time { return now }, svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/provider", strings.NewReader(body))
 	req.Header.Set("X-Event-Id", "evt_123")

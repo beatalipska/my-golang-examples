@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 	"webhook-ingestion-service/internal/httpapi"
+	"webhook-ingestion-service/internal/store/postgres"
+	"webhook-ingestion-service/internal/task"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -41,8 +43,11 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthz", healthHandler(db))
-	mux.HandleFunc("POST /webhooks/provider", httpapi.WebhookProviderHandler(secret, nil))
+	eventsRepo := postgres.NewEventRepo(db)
+	svc := task.NewService(eventsRepo)
+
+	mux.HandleFunc("POST /webhooks/provider", httpapi.WebhookProviderHandler(secret, nil, svc))
+	mux.HandleFunc("GET /events/", httpapi.GetEventHandler(svc))
 
 	// Placeholder: later we’ll add /webhooks/provider here
 	// mux.HandleFunc("POST /webhooks/provider", ...)
