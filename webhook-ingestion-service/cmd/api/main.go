@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"webhook-ingestion-service/internal/httpapi"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -41,6 +42,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", healthHandler(db))
+	mux.HandleFunc("POST /webhooks/provider", httpapi.WebhookProviderHandler(secret, nil))
 
 	// Placeholder: later we’ll add /webhooks/provider here
 	// mux.HandleFunc("POST /webhooks/provider", ...)
