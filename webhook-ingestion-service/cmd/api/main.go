@@ -40,16 +40,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
-		defer cancel()
-		if err := db.PingContext(ctx); err != nil {
-			http.Error(w, "db not ready", http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	mux.HandleFunc("GET /healthz", healthHandler(db))
 
 	// Placeholder: later we’ll add /webhooks/provider here
 	// mux.HandleFunc("POST /webhooks/provider", ...)
@@ -81,4 +72,22 @@ func main() {
 	}
 
 	log.Printf("bye")
+}
+
+type DBPinger interface {
+	PingContext(ctx context.Context) error
+}
+
+func healthHandler(db DBPinger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
+		defer cancel()
+
+		if err := db.PingContext(ctx); err != nil {
+			http.Error(w, "db not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
 }
