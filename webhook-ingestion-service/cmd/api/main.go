@@ -45,7 +45,19 @@ func main() {
 
 	eventsRepo := postgres.NewEventRepo(db)
 	svc := task.NewService(eventsRepo)
+	// Readyz (DB check)
+	mux.HandleFunc("GET /readyz", httpapi.ReadyzHandler(db))
 
+	// Debug: process one due event
+	deps := task.WorkerDeps{
+		Repo:      eventsRepo,           // postgres.EventRepo implements task.WorkerRepository
+		Processor: task.NoopProcessor{}, // dodamy poniżej
+		Backoff:   task.DefaultBackoff(),
+		Now:       func() time.Time { return time.Now().UTC() },
+		// RNG optional; if nil, NextRetryAt will create one
+	}
+
+	mux.HandleFunc("POST /process/once", httpapi.ProcessOnceHandler(deps))
 	mux.HandleFunc("POST /webhooks/provider", httpapi.WebhookProviderHandler(secret, nil, svc))
 	mux.HandleFunc("GET /events/", httpapi.GetEventHandler(svc))
 

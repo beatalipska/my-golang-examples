@@ -30,7 +30,7 @@ FOR UPDATE SKIP LOCKED
 LIMIT 1;
 `
 	var e task.ClaimedEvent
-	err = tx.QueryRowContext(ctx, selectQ).Scan(&e.ID, &e.Type, &e.Payload)
+	err = tx.QueryRowContext(ctx, selectQ).Scan(&e.ID, &e.Type, &e.Payload, &e.Attempts)
 	if err == sql.ErrNoRows {
 		_ = tx.Commit()
 		return task.ClaimedEvent{}, false, nil

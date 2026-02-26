@@ -27,4 +27,6 @@ test:
 	go test ./...
 
 run:
-	DB_URL="$(DB_URL)" go run ./cmd/api
+	DB_URL="postgres://app:app@localhost:5432/webhookdb?sslmode=disable" \
+	WEBHOOK_SECRET="dev-secret" \
+	go run ./cmd/api
