@@ -8,19 +8,20 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+
 	"webhook-ingestion-service/internal/httpapi"
 	"webhook-ingestion-service/internal/store/postgres"
 	"webhook-ingestion-service/internal/task"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func main() {
 	dbURL := os.Getenv("DB_URL")
 	secret := os.Getenv("WEBHOOK_SECRET")
-
 	if dbURL == "" {
 		log.Fatal("DB_URL is required")
 	}
@@ -34,39 +35,53 @@ func main() {
 	}
 	defer db.Close()
 
-	// Fast fail if DB unreachable
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := db.PingContext(ctx); err != nil {
+		cancel()
 		log.Fatalf("db ping: %v", err)
 	}
+	cancel()
 
-	mux := http.NewServeMux()
+	repo := postgres.NewEventRepo(db)
+	svc := task.NewService(repo)
 
-	eventsRepo := postgres.NewEventRepo(db)
-	svc := task.NewService(eventsRepo)
-	// Readyz (DB check)
-	mux.HandleFunc("GET /readyz", httpapi.ReadyzHandler(db))
-
-	// Debug: process one due event
-	deps := task.WorkerDeps{
-		Repo:      eventsRepo,           // postgres.EventRepo implements task.WorkerRepository
-		Processor: task.NoopProcessor{}, // dodamy poniżej
+	// Worker deps
+	workerDeps := task.WorkerDeps{
+		Repo:      repo,
+		Processor: task.NoopProcessor{}, // podmień później na real processor
 		Backoff:   task.DefaultBackoff(),
 		Now:       func() time.Time { return time.Now().UTC() },
-		// RNG optional; if nil, NextRetryAt will create one
+		// RNG optional
 	}
 
-	mux.HandleFunc("POST /process/once", httpapi.ProcessOnceHandler(deps))
-	mux.HandleFunc("POST /webhooks/provider", httpapi.WebhookProviderHandler(secret, nil, svc))
-	mux.HandleFunc("GET /events/", httpapi.GetEventHandler(svc))
+	// Root context cancelled on SIGINT/SIGTERM
+	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	// Placeholder: later we’ll add /webhooks/provider here
-	// mux.HandleFunc("POST /webhooks/provider", ...)
+	// Start background worker
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		task.RunWorker(rootCtx, workerDeps, task.DefaultWorkerConfig(), log.Default())
+	}()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", healthHandler(db))
+	mux.HandleFunc("/readyz", httpapi.ReadyzHandler(db))
+	mux.HandleFunc("/webhooks/provider", httpapi.WebhookProviderHandler(secret, nil, svc))
+	mux.HandleFunc("/events/", httpapi.GetEventHandler(svc))
+	mux.HandleFunc("/process/once", httpapi.ProcessOnceHandler(workerDeps))
+
+	handler := httpapi.WithRequestID(log.Default())(
+		httpapi.Logging(log.Default())(
+			mux,
+		),
+	)
 
 	srv := &http.Server{
 		Addr:              ":8080",
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -77,35 +92,29 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+	<-rootCtx.Done()
+	log.Printf("shutdown signal received")
 
-	log.Printf("shutting down...")
-
+	// Stop accepting new requests; wait for in-flight with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown error: %v", err)
+		log.Printf("http shutdown error: %v", err)
 	}
 
+	// Wait for worker to stop (it stops because rootCtx is cancelled)
+	wg.Wait()
 	log.Printf("bye")
 }
 
+// reuse your existing one; or keep the simple one:
 type DBPinger interface {
 	PingContext(ctx context.Context) error
 }
 
 func healthHandler(db DBPinger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
-		defer cancel()
-
-		if err := db.PingContext(ctx); err != nil {
-			http.Error(w, "db not ready", http.StatusServiceUnavailable)
-			return
-		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}
