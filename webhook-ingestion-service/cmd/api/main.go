@@ -67,7 +67,7 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthHandler(db))
+	mux.HandleFunc("/healthz", healthHandler())
 	mux.HandleFunc("/readyz", httpapi.ReadyzHandler(db))
 	mux.HandleFunc("/webhooks/provider", httpapi.WebhookProviderHandler(secret, nil, svc))
 	mux.HandleFunc("/events/", httpapi.GetEventHandler(svc))
@@ -108,12 +108,7 @@ func main() {
 	log.Printf("bye")
 }
 
-// reuse your existing one; or keep the simple one:
-type DBPinger interface {
-	PingContext(ctx context.Context) error
-}
-
-func healthHandler(db DBPinger) http.HandlerFunc {
+func healthHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

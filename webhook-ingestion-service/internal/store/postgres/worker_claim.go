@@ -46,7 +46,7 @@ SET status = 'processing',
 WHERE id = $1
 RETURNING attempts;
 `
-	if _, err := tx.ExecContext(ctx, updateQ, e.ID); err != nil {
+	if err := tx.QueryRowContext(ctx, updateQ, e.ID).Scan(&e.Attempts); err != nil {
 		return task.ClaimedEvent{}, false, err
 	}
 
